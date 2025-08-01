@@ -1,0 +1,85 @@
+name: "SonarCloud Analysis"
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch: {}
+
+jobs:
+  sonar-scan:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detectar a Raiz do Projeto
+        id: find-root
+        shell: bash
+        run: |
+          PROJECT_DIR="."
+          ALL_PROJECTS=$(find . -maxdepth 3 -name "*.sln" -o -name "settings.gradle" -o -name "settings.gradle.kts")
+          if [ -n "$ALL_PROJECTS" ]; then
+            PROJECT_DIR=$(dirname "$(echo "$ALL_PROJECTS" | head -n1)")
+          fi
+          echo "Projeto principal selecionado: $PROJECT_DIR"
+          echo "PROJECT_PATH=$PROJECT_DIR" >> $GITHUB_ENV
+      # Passo para determinar a versão do Java
+      - name: Determine Java Version
+        id: determine_java
+        shell: bash
+        run: |
+          PROPS="gradle/wrapper/gradle-wrapper.properties"
+          JAVA_VERSION=17
+          if [ -f "$PROPS" ]; then
+            GRADLE_VER=$(grep -oP 'gradle-\K[0-9.]*(?=-)' "$PROPS" || true)
+            if [[ "$GRADLE_VER" == 4.* ]] || [[ "$GRADLE_VER" == 3.* ]] || [[ "$GRADLE_VER" == 2.* ]]; then
+              echo "Gradle v$GRADLE_VER detectado. Usando Java 8."
+              JAVA_VERSION=8
+            else
+              echo "Gradle moderno (v$GRADLE_VER) ou não encontrado. Usando Java 17."
+            fi
+          else
+            echo "Arquivo gradle-wrapper.properties não encontrado. Usando Java 17 como padrão."
+          fi
+          echo "JAVA_VERSION=$JAVA_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ steps.determine_java.outputs.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Build project with Gradle
+        working-directory: ${{ env.PROJECT_PATH }}
+        shell: bash
+        run: |
+          set -e
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "Compilando o projeto para gerar os binários..."
+            ./gradlew assembleDebug
+          else
+            echo "ERRO: O arquivo ./gradlew não foi encontrado no projeto."
+            exit 1
+          fi
+
+      - name: Analyze with SonarCloud Scanner (Manual)
+        working-directory: ${{ env.PROJECT_PATH }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        shell: bash
+        run: |
+          export SONAR_SCANNER_VERSION="5.0.1.3006"
+          export SONAR_SCANNER_HOME=$HOME/.sonar/sonar-scanner-$SONAR_SCANNER_VERSION
+          curl --create-dirs -sSLo $HOME/.sonar/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$SONAR_SCANNER_VERSION-linux.zip
+          unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
+          export PATH=$SONAR_SCANNER_HOME/bin:$PATH
+          sonar-scanner \
+            -Dsonar.projectKey=grilo-org_20250801T160548_celestinofabiano_eucomida \
+            -Dsonar.organization=grilo-org \
+            -Dsonar.sources=. \
+            -Dsonar.java.binaries=app/build/intermediates/javac/debug/classes \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=$SONAR_TOKEN
